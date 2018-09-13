@@ -22,7 +22,7 @@ config = {
     "N" : 8,
     "EPS" : 1e-7,
     "K5X5" : K5X5,
-    "MAX_IMAGES" : 1,
+    "MAX_IMAGES" : 5,
     "NUM_OCTAVE" : 3,
     "STEP_SIZE" : 1.0,
     "NUM_ITERATION" : 50,

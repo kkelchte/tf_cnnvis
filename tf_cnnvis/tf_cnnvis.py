@@ -1,5 +1,6 @@
 # imports
 import os
+import shutil
 import time
 
 import numpy as np
@@ -124,7 +125,7 @@ def _get_visualization(sess_graph_path, value_feed_dict, input_tensor, layers, p
         True if successful. False otherwise.
     :rtype: boolean
     """
-    is_success = True
+    # is_success = True
 
     # convert all inplicit and explicit sess input cases to a PATH
     if isinstance(sess_graph_path, tf.Graph):
@@ -141,8 +142,8 @@ def _get_visualization(sess_graph_path, value_feed_dict, input_tensor, layers, p
             PATH = _save_model(tf.get_default_graph())
     else:
         print("sess_graph_path must be an instance of tf.Session, tf. Graph, string or None.")
-        is_success = False
-        return is_success
+        # is_success = False
+        return None
 
     is_gradient_overwrite = method == "deconv"
     if is_gradient_overwrite:
@@ -150,7 +151,7 @@ def _get_visualization(sess_graph_path, value_feed_dict, input_tensor, layers, p
 
     # a new default Graph g and Session s which are loaded and used only in these nested with statements
     with tf.Graph().as_default() as g:
-        with tf.Session(graph=g).as_default() as s:
+        with tf.Session(graph=g,config=tf.ConfigProto(allow_soft_placement=True)).as_default() as s:
             if is_gradient_overwrite:
                 with g.gradient_override_map({'Relu': 'GuidedRelu', 'LRN': 'Customlrn'}): # overwrite gradients with custom gradients
                     #works on s which is the default session, so it has an impact despite s is not used after this
@@ -161,16 +162,20 @@ def _get_visualization(sess_graph_path, value_feed_dict, input_tensor, layers, p
             if not isinstance(layers, list):
                 layers =[layers]
 
+            results={}
             for layer in layers:
                 if layer != None and layer.lower() not in dict_layer.keys():
-                    is_success = _visualization_by_layer_name(g, value_feed_dict, input_tensor, layer, method, path_logdir, path_outdir)
+                    results[layer] = _visualization_by_layer_name(g, value_feed_dict, input_tensor, layer, method, path_logdir, path_outdir)
                 elif layer != None and layer.lower() in dict_layer.keys():
                     layer_type = dict_layer[layer.lower()]
-                    is_success = _visualization_by_layer_type(g, value_feed_dict, input_tensor, layer_type, method, path_logdir, path_outdir)
+                    results[layer] = _visualization_by_layer_type(g, value_feed_dict, input_tensor, layer_type, method, path_logdir, path_outdir)
                 else:
                     print("Skipping %s . %s is not valid layer name or layer type" % (layer, layer))
 
-    return is_success
+    # print(os.path.dirname(PATH))
+    shutil.rmtree(os.path.dirname(PATH))
+
+    return results
 
 
 def _graph_import_function(PATH, sess):
@@ -214,7 +219,7 @@ def _visualization_by_layer_type(graph, value_feed_dict, input_tensor, layer_typ
         True if successful. False otherwise.
     :rtype: boolean
     """
-    is_success = True
+    # is_success = True
 
     layers = []
     # Loop through all operations and parse operations
@@ -222,10 +227,12 @@ def _visualization_by_layer_type(graph, value_feed_dict, input_tensor, layer_typ
     for i in graph.get_operations():
         if layer_type.lower() == i.type.lower():
             layers.append(i.name)
-
+            # if 'control' in i.name:
+            #     print i.name
+    results={}
     for layer in layers:
-        is_success = _visualization_by_layer_name(graph, value_feed_dict, input_tensor, layer, method, path_logdir, path_outdir)
-    return is_success
+        results[layer] = _visualization_by_layer_name(graph, value_feed_dict, input_tensor, layer, method, path_logdir, path_outdir)
+    return results
 
 def _visualization_by_layer_name(graph, value_feed_dict, input_tensor, layer_name, method, path_logdir, path_outdir):
     """
@@ -277,7 +284,7 @@ def _visualization_by_layer_name(graph, value_feed_dict, input_tensor, layer_nam
     #is_valid_sess = True
     with graph.as_default():
         # computing reconstruction
-        X = X_in
+        X = X_in #input tensor
         if input_tensor != None:
             X = get_tensor(graph = graph, name = input_tensor.name)
         # original_images = sess.run(X, feed_dict = feed_dict)
@@ -294,18 +301,15 @@ def _visualization_by_layer_name(graph, value_feed_dict, input_tensor, layer_nam
             is_success = _deepdream(graph, sess, op_tensor, X, feed_dict, layer_name, path_outdir, path_logdir)
             is_deep_dream = False
 
-    # except:
-    # 	is_success = False
-    # 	print("No Layer with layer name = %s" % (layer_name))
-    # 	return is_success
-
-    if is_deep_dream:
-        is_success = write_results(results, layer_name, path_outdir, path_logdir, method = method)
-
+    # import pdb; pdb.set_trace()
     start += time.time()
     print("Reconstruction Completed for %s layer. Time taken = %f s" % (layer_name, start))
-
-    return is_success
+    
+    if is_deep_dream:
+        return results
+        # is_success = write_results(results, layer_name, path_outdir, path_logdir, method = method)
+    else:
+        return is_success
 
 
 # computing visualizations
@@ -314,18 +318,19 @@ def _activation(graph, sess, op_tensor, feed_dict):
         with sess.as_default() as sess:
             act = sess.run(op_tensor, feed_dict = feed_dict)
     return act
+
 def _deconvolution(graph, sess, op_tensor, X, feed_dict):
     out = []
     with graph.as_default() as g:
-        # get shape of tensor
+        # get shape of tensor of filter from which we start deconvolving back to the input
         tensor_shape = op_tensor.get_shape().as_list()
 
         with sess.as_default() as sess:
             # creating placeholders to pass featuremaps and
-            # creating gradient ops
             featuremap = [tf.placeholder(tf.int32) for i in range(config["N"])]
+            # creating gradient ops
             reconstruct = [tf.gradients(tf.transpose(tf.transpose(op_tensor)[featuremap[i]]), X)[0] for i in range(config["N"])]
-
+            # feature maps as well as gradient ops are calculated per "N"(8) channels 
             # Execute the gradient operations in batches of 'n'
             for i in range(0, tensor_shape[-1], config["N"]):
                 c = 0
@@ -334,6 +339,7 @@ def _deconvolution(graph, sess, op_tensor, X, feed_dict):
                         feed_dict[featuremap[j]] = i + j
                         c += 1
                 if c > 0:
+                    # calculate the gradient of N channels in your feature map towards the input
                     out.extend(sess.run(reconstruct[:c], feed_dict = feed_dict))
     return out
 def _deepdream(graph, sess, op_tensor, X, feed_dict, layer, path_outdir, path_logdir):
@@ -423,3 +429,62 @@ def deepdream_visualization(sess_graph_path, value_feed_dict, layer, classes, in
         is_success = _get_visualization(sess_graph_path, value_feed_dict, input_tensor = input_tensor, layers = layer, method = "deepdream",
             path_logdir = path_logdir, path_outdir = path_outdir)
     return is_success
+
+# add specific deconvolutionlayer to fit my needs
+# def get_outputs_deconvolution(sess_graph_path, value_feed_dict, path_logdir = './Log', path_outdir = "./Output", layers = 'c', method="deconv"):
+#     """
+#     Calculate the deconvolved output from a set of input images
+#     Results returns the calculated deconvolution for each input image.
+#     """
+#     input_tensor=None
+
+#     # convert all inplicit and explicit sess input cases to a PATH
+#     if isinstance(sess_graph_path, tf.Graph):
+#         PATH = _save_model(sess_graph_path)
+#     elif isinstance(sess_graph_path, tf.Session):
+#         PATH = _save_model(sess_graph_path)
+#     elif isinstance(sess_graph_path, string_types):
+#         PATH = sess_graph_path
+#     elif sess_graph_path is None:
+#         # None input defaults to the default session if available, to the default graoh otherwise.
+#         if isinstance(tf.get_default_session(), tf.Session):
+#             PATH = _save_model(tf.get_default_session())
+#         else:
+#             PATH = _save_model(tf.get_default_graph())
+#     else:
+#         print("sess_graph_path must be an instance of tf.Session, tf. Graph, string or None.")
+#         results = None
+#         # return is_success
+#         return results
+
+#     is_gradient_overwrite = method == "deconv"
+#     if is_gradient_overwrite:
+#         _register_custom_gradients() # register custom gradients
+
+#     # a new default Graph g and Session s which are loaded and used only in these nested with statements
+#     with tf.Graph().as_default() as g:
+#         with tf.Session(graph=g).as_default() as s:
+#             if is_gradient_overwrite:
+#                 with g.gradient_override_map({'Relu': 'GuidedRelu', 'LRN': 'Customlrn'}): # overwrite gradients with custom gradients
+#                     #works on s which is the default session, so it has an impact despite s is not used after this
+#                     s = _graph_import_function(PATH,s)
+#             else:
+#                 s = _graph_import_function(PATH,s)
+
+#             if not isinstance(layers, list):
+#                 layers =[layers]
+
+#             op_layers=[] #names of the filter operators 
+#             for layer in layers: # for operation_type in possibly 'r', 'c', 'p'
+#                 layer_type = dict_layer[layer.lower()]
+#                 for i in g.get_operations():
+#                     if layer_type.lower() == i.type.lower() and 'control' in i.name:
+#                         op_layers.append(i.name)
+
+#             # print op_layers
+#             results={}       
+#             for layer in op_layers:
+#                 results[layer] = _visualization_by_layer_name(g, value_feed_dict, input_tensor, layer, method, path_logdir, path_outdir)
+                
+#     return results
+
